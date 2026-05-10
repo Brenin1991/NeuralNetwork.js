@@ -2,36 +2,33 @@ export class NeuralNetwork {
     constructor(layers, options = {}) {
         this.layers = layers;
         this.lr = options.lr || 0.001;
+        this.leakyAlpha = options.leakyAlpha || 0.01;
         this.weights = [];
         this.biases = [];
         this.initWeights();
     }
 
+    relu(x)       { return x > 0 ? x : this.leakyAlpha * x; }
+    relu_deriv(x) { return x > 0 ? 1 : this.leakyAlpha; }
+
     softmax(arr) {
         const max = Math.max(...arr);
         const exps = arr.map(x => Math.exp(x - max));
-        const sum = exps.reduce((a, b) => a + b, 0);
-        return exps.map(x => x / sum);
+        const sum = exps.reduce((a, b) => a + b, 0) || 1e-8;
+        return exps.map(e => e / sum);
     }
 
-    relu(x) { return Math.max(0, x); }
-    relu_deriv(x) { return x > 0 ? 1 : 0; }
-
-    softmax(arr) {
-        let max = Math.max(...arr);
-        let exps = arr.map(x => Math.exp(x - max));
-        let sum = exps.reduce((a, b) => a + b, 0) || 1e-8;
-        return exps.map(e => e / sum);
+    heRandom(fanIn) {
+        const u1 = Math.random() + 1e-10;
+        const u2 = Math.random();
+        const normal = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        return normal * Math.sqrt(2 / (1 + this.leakyAlpha ** 2) / fanIn);
     }
 
     randomMatrix(rows, cols) {
         return Array.from({ length: rows }, () =>
-            Array.from({ length: cols }, () => Math.random() * 0.2 - 0.1)
+            Array.from({ length: cols }, () => this.heRandom(cols))
         );
-    }
-
-    randomVector(size) {
-        return Array.from({ length: size }, () => Math.random() * 0.2 - 0.1);
     }
 
     initWeights() {
@@ -39,7 +36,8 @@ export class NeuralNetwork {
             this.weights.push(
                 this.randomMatrix(this.layers[i + 1], this.layers[i])
             );
-            this.biases.push(this.randomVector(this.layers[i + 1]));
+            // Biases em zero — padrão recomendado
+            this.biases.push(new Array(this.layers[i + 1]).fill(0));
         }
     }
 
@@ -48,59 +46,59 @@ export class NeuralNetwork {
         let zs = [];
 
         for (let l = 0; l < this.weights.length; l++) {
-            let w = this.weights[l];
-            let b = this.biases[l];
-            let prev = activations[l];
-            let z = [];
+            const w = this.weights[l];
+            const b = this.biases[l];
+            const prev = activations[l];
+            const isLastLayer = l === this.weights.length - 1;
+            const z = [];
             let a = [];
+
             for (let i = 0; i < w.length; i++) {
-                let soma = 0;
+                let soma = b[i];
                 for (let j = 0; j < w[i].length; j++) {
                     soma += w[i][j] * prev[j];
                 }
-                soma += b[i];
                 z.push(soma);
-                if (l !== this.weights.length - 1) {
+                if (!isLastLayer) {
                     a.push(this.relu(soma));
                 }
             }
 
-            // saída → softmax
-            if (l === this.weights.length - 1) {
+            if (isLastLayer) {
                 a = this.softmax(z);
             }
+
             zs.push(z);
             activations.push(a);
         }
+
         return { activations, zs };
     }
 
     train(x, t) {
-        let { activations, zs } = this.forward(x);
-        let deltas = [];
-        let output = activations.at(-1);
+        const { activations, zs } = this.forward(x);
+        const output = activations.at(-1);
+        const deltas = [];
 
-        // cross-entropy + softmax
-        let delta = output.map((y, i) => y - t[i]);
-        deltas.push(delta);
+        deltas.push(output.map((y, i) => y - t[i]));
 
-        // backprop
         for (let l = this.weights.length - 2; l >= 0; l--) {
-            let newDelta = [];
+            const newDelta = [];
+            const nextDelta = deltas[0];
+            const nextWeights = this.weights[l + 1];
+
             for (let i = 0; i < this.weights[l].length; i++) {
                 let sum = 0;
-                for (let j = 0; j < deltas[0].length; j++) {
-                    sum += this.weights[l + 1][j][i] * deltas[0][j];
+                for (let j = 0; j < nextDelta.length; j++) {
+                    sum += nextWeights[j][i] * nextDelta[j];
                 }
-                sum *= this.relu_deriv(zs[l][i]);
-                newDelta.push(sum);
+                newDelta.push(sum * this.relu_deriv(zs[l][i]));
             }
             deltas.unshift(newDelta);
         }
 
-        // update
         for (let l = 0; l < this.weights.length; l++) {
-            let a_prev = activations[l];
+            const a_prev = activations[l];
             for (let i = 0; i < this.weights[l].length; i++) {
                 for (let j = 0; j < this.weights[l][i].length; j++) {
                     this.weights[l][i][j] -= this.lr * deltas[l][i] * a_prev[j];
@@ -109,7 +107,7 @@ export class NeuralNetwork {
             }
         }
 
-        // loss
+        // Cross-Entropy loss
         let loss = 0;
         for (let i = 0; i < output.length; i++) {
             loss -= t[i] * Math.log(output[i] + 1e-8);
